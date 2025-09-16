@@ -4,15 +4,16 @@ from dotenv import load_dotenv
 import requests
 
 from agents.base import BaseAgent
+from agents.extract_json import extract_and_clean_json
 
 load_dotenv()
 
 
-class OpenrouterAgent(BaseAgent):
+class LocalAgent(BaseAgent):
     def __init__(self):
         self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-        self.ANSWERING_MODEL_NAME = os.getenv(
-            "ANSWERING_MODEL_NAME", "openai/gpt-oss-20b:free"
+        self.ANSWERING_LOCAL_MODEL_NAME = os.getenv(
+            "ANSWERING_LOCAL_MODEL_NAME", "mistralai/mistral-7b-instruct:free"
         )
         self.OPENROUTER_HOST = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -28,7 +29,7 @@ class OpenrouterAgent(BaseAgent):
                 },
                 data=json.dumps(
                     {
-                        "model": self.ANSWERING_MODEL_NAME,
+                        "model": self.ANSWERING_LOCAL_MODEL_NAME,
                         "messages": [{"role": "user", "content": user_query}],
                     }
                 ),
@@ -75,7 +76,7 @@ class OpenrouterAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    processing = OpenrouterAgent()
+    processing = LocalAgent()
 
     state = {"user_query": "What is machine learning?"}
     result_state = processing.run(state)

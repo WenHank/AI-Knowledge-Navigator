@@ -14,6 +14,9 @@ load_dotenv()
 class PreprocessingAgent(BaseAgent):
     def __init__(self):
         self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+        self.PREPROCESSING_MODEL_NAME = os.getenv(
+            "PREPROCESSING_MODEL_NAME", "meta-llama/llama-3.3-8b-instruct:free"
+        )
         self.OPENROUTER_HOST = "https://openrouter.ai/api/v1/chat/completions"
         self.PROCESSING_PROMPT = PROCESSING_PROMPT
 
@@ -30,7 +33,7 @@ class PreprocessingAgent(BaseAgent):
                 },
                 data=json.dumps(
                     {
-                        "model": "openai/gpt-4o-mini",
+                        "model": self.PREPROCESSING_MODEL_NAME,
                         "messages": [{"role": "user", "content": query}],
                     }
                 ),
