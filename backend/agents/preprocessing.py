@@ -226,13 +226,10 @@ class PreprocessingAgent(BaseAgent):
             routing_type = self._run_openrouter_fallback(user_query)
         
         print(f"✅ Final routing type: {routing_type}")
-        state["preprocessing_result"] = routing_type
+        state["routing_type"] = routing_type
         
         return state
     
-    def __call__(self, state: dict) -> dict:
-        """Make the agent callable for LangGraph compatibility"""
-        return self.run(state)
 
 
 if __name__ == "__main__":
@@ -263,7 +260,7 @@ if __name__ == "__main__":
             print(f"\n--- Testing: {query[:50]}... ---")
             state = {"user_query": query}
             result_state = agent.run(state)
-            print(f"Result type: {result_state['preprocessing_result']}")
+            print(f"Result type: {result_state['routing_type']}")
             
     except Exception as e:
         print(f"Error with local router: {e}")

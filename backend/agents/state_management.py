@@ -2,6 +2,9 @@
 
 from typing import TypedDict, Annotated, Optional
 
+def overwrite(old: str, new: str) -> str:
+    """Simple overwrite reducer for string values"""
+    return new
 
 def overwrite_int(old: Optional[int], new: Optional[int]) -> Optional[int]:
     """Simple overwrite reducer for int values"""
@@ -27,7 +30,10 @@ class AgentState(TypedDict, total=False):
     """State definition for the agent workflow"""
 
     user_query: str
-    processed_query: str
-    classification: Annotated[Optional[int], overwrite_int]  # 1 or 2
-    retrieved_docs: Annotated[list[str], append_unique]
     final_answer: str
+    routing_type: str  # "1" for simple, "2" for complex
+    next_node: str
+
+    current_node: Annotated[str, overwrite]
+    node_status: Annotated[dict, overwrite]
+    execution_summary: Annotated[dict, overwrite]
