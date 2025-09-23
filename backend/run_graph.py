@@ -21,6 +21,9 @@ def preprocessing_node(
     """
     Preprocessing node that processes the user query and routes based on classification
     """
+
+    print("------------- Starting processing node -------------")
+
     execution_summary = state.get("execution_summary", {})
 
     try:
@@ -70,6 +73,8 @@ def simple_processing_node(state: AgentState) -> Command[Literal[END]]:
     """
     Simple processing node using LocalAgent for simple queries (classification = 1)
     """
+    print("------------- Starting simple processing node -------------")
+
     execution_summary = state.get("execution_summary", {})
     user_query = state.get("user_query", "")
 
@@ -120,6 +125,7 @@ def complex_processing_node(state: AgentState) -> Command[Literal[END]]:
     """
     Complex processing node using OpenrouterAgent for advanced queries (classification = 2)
     """
+    print("------------- Starting complex processing node -------------")
     execution_summary = state.get("execution_summary", {})
     user_query = state.get("user_query", "")
 
@@ -165,34 +171,44 @@ def complex_processing_node(state: AgentState) -> Command[Literal[END]]:
         return Command(goto=END, update=update)
 
 
-def create_workflow() -> StateGraph:
-    """
-    Create and configure the LangGraph workflow
-    """
-    workflow = StateGraph(AgentState)
-    
-    # Add nodes
-    workflow.add_node("preprocessing", preprocessing_node)
-    workflow.add_node("simple_processing", simple_processing_node)
-    workflow.add_node("complex_processing", complex_processing_node)
-    
-    # Add edges
-    workflow.add_edge(START, "preprocessing")
-    # Routing is handled by the preprocessing_node's Command return
-    
-    return workflow.compile()
+workflow = StateGraph(AgentState)
+
+# Add nodes
+workflow.add_node("preprocessing", preprocessing_node)
+workflow.add_node("simple_processing", simple_processing_node)
+workflow.add_node("complex_processing", complex_processing_node)
+
+# Add edges
+workflow.add_edge(START, "preprocessing")
+
+workflow.set_entry_point("preprocessing")
+
+agent_runner = workflow.compile()
 
 
 # Example usage
 if __name__ == "__main__":
-    workflow = create_workflow()
+
+    test_queries = [
+            "What is machine learning?",  # Should be type 1 (EASY)
+            # "What's the capital of France?",  # Should be type 1 (EASY) 
+            "How do I make coffee?",  # Should be type 1 (EASY)
+            # "Explain quantum entanglement's implications for cryptography",  # Should be type 2 (DIFFICULT)
+            # "Design a distributed system architecture for handling 1M concurrent users",  # Should be type 2 (DIFFICULT)
+            "Analyze the geopolitical implications of climate change on global trade patterns",  # Should be type 2 (DIFFICULT)
+        ]
+
+    for query in test_queries:
+            print(f"\n--- Testing: {query[:50]}... ---")
+              # Test with a simple query
+            initial_state = {
+                "user_query":query,
+                "execution_summary": {},
+                "node_status": {}
+            }
+            final_state = agent_runner.invoke(initial_state)
+
+            print("Final result:", final_state)
+
+  
     
-    # Test with a simple query
-    initial_state = {
-        "user_query": "What is the weather today?",
-        "execution_summary": {},
-        "node_status": {}
-    }
-    
-    result = workflow.invoke(initial_state)
-    print("Final result:", result.get("final_answer"))

@@ -72,11 +72,11 @@ class FineTunedRouter:
             self.model = None
             self.tokenizer = None
     
-    def route_query(self, query, temperature=0.1, max_new_tokens=20):
+    def route_query(self, query, temperature=0.1, max_new_tokens=50):
         """Route a single query"""
         if self.model is None or self.tokenizer is None:
             print("⚠️  Router not loaded, returning default route")
-            return "BALANCED_MODEL", "Model not loaded"
+            return '{"routing_type": 1}'
         
         try:
             # Format prompt (same as training)
@@ -108,18 +108,21 @@ class FineTunedRouter:
                 skip_special_tokens=True
             ).strip()
             
+            # Clean up response - remove any markdown or extra formatting
+            response = response.replace("```json", "").replace("```", "").strip()
+            
             return response
             
         except Exception as e:
             print(f"⚠️  Error during routing: {e}")
-            return "BALANCED_MODEL", f"Error: {str(e)}"
-    
+            return '{"routing_type": 1}'
 
 
 class PreprocessingAgent(BaseAgent):
     def __init__(self, use_local_router=True):
         self.use_local_router = use_local_router
         router_path = "./agents/routellm_fine_tuned_router"
+        
         # Initialize local router if requested
         if self.use_local_router and router_path:
             print("Initializing local fine-tuned router...")
@@ -136,37 +139,66 @@ class PreprocessingAgent(BaseAgent):
         self.OPENROUTER_HOST = "https://openrouter.ai/api/v1/chat/completions"
         self.PROCESSING_PROMPT = PROCESSING_PROMPT
     
+    def _parse_routing_response(self, raw_response):
+        """Parse routing response and return simple integer"""
+        try:
+            # Clean the response
+            cleaned_response = raw_response.strip()
+            
+            # Remove markdown formatting if present
+            cleaned_response = cleaned_response.replace("```json", "").replace("```", "").strip()
+            
+            # Try to parse as JSON
+            try:
+                result_dict = json.loads(cleaned_response)
+                routing_type = result_dict.get("routing_type", 1)
+            except json.JSONDecodeError:
+                # Fallback: look for numbers in the response
+                import re
+                numbers = re.findall(r'\b[12]\b', cleaned_response)
+                routing_type = int(numbers[0]) if numbers else 1
+            
+            # Ensure routing_type is an integer
+            if isinstance(routing_type, str):
+                routing_type = int(routing_type)
+            
+            # Validate routing_type (must be 1 or 2)
+            if routing_type not in [1, 2]:
+                routing_type = 1
+            
+            # Return simple integer
+            return routing_type
+            
+        except Exception as e:
+            print(f"❌ Error parsing routing response: {e}")
+            return 1
+    
     def _run_local_router(self, user_query):
         """Use the local fine-tuned router"""
         try:
+            print("🤖 Using local fine-tuned router...")
+            
             # Route the query
             raw_response = self.router.route_query(user_query)
+            print(f"📝 Local router raw response: {raw_response}")
+            
+            # Parse and return simple integer
+            result = self._parse_routing_response(raw_response)
+            print(f"✅ Local router result: {result}")
+            
+            return result
 
-            print(f"📝 Raw Response: {raw_response}")
-
-            # Parse the JSON string into a Python dictionary
-            result_dict = json.loads(raw_response)
-
-            # Create JSON response matching your expected format
-            result_json = {
-                "type": result_dict.get("type", 1),
-                "router_decision": result_dict,
-            }
-
-            return result_json
-
-        except json.JSONDecodeError as e:
-            print(f"❌ Local router error: Failed to parse JSON from response: {e}")
-            return {"type": 1, "router_decision": "JSONDecodeError"}
         except Exception as e:
             print(f"❌ Local router error: {e}")
-            return {"type": 1, "router_decision": "Exception"}
+            return 1
         
     def _run_openrouter_fallback(self, user_query):
         """Use OpenRouter API as fallback"""
-        query = self.PROCESSING_PROMPT + "This is the question: " + user_query
-        
         try:
+            print("🌐 Using OpenRouter API fallback...")
+            
+            query = self.PROCESSING_PROMPT + "\n\nThis is the question: " + user_query
+            
             response = requests.post(
                 url=self.OPENROUTER_HOST,
                 headers={
@@ -180,37 +212,28 @@ class PreprocessingAgent(BaseAgent):
             )
             
             if response.status_code == 401:
-                print("Error: Invalid API key or unauthorized access")
-                return "1"  # Default fallback
+                print("❌ Error: Invalid API key or unauthorized access")
+                return 1
             
             response.raise_for_status()
             response_data = response.json()
             
             if "choices" in response_data and len(response_data["choices"]) > 0:
                 content = response_data["choices"][0]["message"]["content"]
-                print("🌐 OpenRouter content:", content)
+                print(f"📝 OpenRouter raw response: {content}")
                 
-                # Process through JSON extractor
-                processed_data = extract_and_clean_json(content)
+                # Parse and return simple integer
+                result = self._parse_routing_response(content)
+                print(f"✅ OpenRouter result: {result}")
                 
-                # Extract routing type
-                if isinstance(processed_data, dict):
-                    routing_type = processed_data.get("type", 1)
-                else:
-                    try:
-                        parsed_data = json.loads(processed_data)
-                        routing_type = parsed_data.get("type", 1)
-                    except:
-                        routing_type = 1
-                
-                return str(routing_type)
+                return result
             else:
-                print("Error: No choices in API response")
-                return "1"
+                print("❌ Error: No choices in API response")
+                return 1
                 
         except Exception as e:
-            print(f"OpenRouter error: {e}")
-            return "1"
+            print(f"❌ OpenRouter error: {e}")
+            return 1
     
     def run(self, state: dict) -> dict:
         user_query = state.get("user_query", "")
@@ -218,19 +241,21 @@ class PreprocessingAgent(BaseAgent):
         print(f"🔍 Processing query: {user_query[:100]}...")
         
         # Try local router first if available
-        if self.use_local_router and self.router is not None:
-            print("Using local fine-tuned router...")
-            routing_type = self._run_local_router(user_query)
+        if self.use_local_router and self.router is not None and self.router.model is not None:
+            routing_result = self._run_local_router(user_query)
         else:
-            print("Using OpenRouter API fallback...")
-            routing_type = self._run_openrouter_fallback(user_query)
+            if not self.OPENROUTER_API_KEY:
+                print("⚠️  No OpenRouter API key found, using default routing")
+                routing_result = 1
+            else:
+                routing_result = self._run_openrouter_fallback(user_query)
         
-        print(f"✅ Final routing type: {routing_type}")
-        state["routing_type"] = routing_type
+        print(f"🎯 Final routing result: {routing_result}")
+        
+        # Set the routing_type in state as simple integer
+        state["routing_type"] = routing_result
         
         return state
-    
-
 
 if __name__ == "__main__":
     # Test with different configurations
