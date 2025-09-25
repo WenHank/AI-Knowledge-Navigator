@@ -36,7 +36,7 @@ def read_fn(path):
 
 
 def prepare_env(output_dir, pdf_file_name, parse_method):
-    local_md_dir = str(os.path.join(output_dir, pdf_file_name, parse_method))
+    local_md_dir = str(os.path.join(output_dir))
     local_image_dir = os.path.join(str(local_md_dir), "images")
     os.makedirs(local_image_dir, exist_ok=True)
     os.makedirs(local_md_dir, exist_ok=True)
@@ -45,33 +45,26 @@ def prepare_env(output_dir, pdf_file_name, parse_method):
 
 def convert_pdf_bytes_to_bytes_by_pypdfium2(pdf_bytes, start_page_id=0, end_page_id=None):
 
-    # 从字节数据加载PDF
     pdf = pdfium.PdfDocument(pdf_bytes)
 
-    # 确定结束页
     end_page_id = end_page_id if end_page_id is not None and end_page_id >= 0 else len(pdf) - 1
     if end_page_id > len(pdf) - 1:
         logger.warning("end_page_id is out of range, use pdf_docs length")
         end_page_id = len(pdf) - 1
 
-    # 创建一个新的PDF文档
     output_pdf = pdfium.PdfDocument.new()
 
-    # 选择要导入的页面索引
     page_indices = list(range(start_page_id, end_page_id + 1))
 
-    # 从原PDF导入页面到新PDF
     output_pdf.import_pages(pdf, page_indices)
 
-    # 将新PDF保存到内存缓冲区
     output_buffer = io.BytesIO()
     output_pdf.save(output_buffer)
 
-    # 获取字节数据
     output_bytes = output_buffer.getvalue()
 
-    pdf.close()  # 关闭原PDF文档以释放资源
-    output_pdf.close()  # 关闭新PDF文档以释放资源
+    pdf.close() 
+    output_pdf.close()  #
 
     return output_bytes
 
@@ -106,7 +99,6 @@ def _process_output(
 ):
     f_draw_line_sort_bbox = False
     from mineru.backend.pipeline.pipeline_middle_json_mkcontent import union_make as pipeline_union_make
-    """处理输出文件"""
     if f_draw_layout_bbox:
         draw_layout_bbox(pdf_info, pdf_bytes, local_md_dir, f"{pdf_file_name}_layout.pdf")
 
@@ -302,13 +294,13 @@ def do_parse(
         formula_enable=True,
         table_enable=True,
         server_url=None,
-        f_draw_layout_bbox=True,
-        f_draw_span_bbox=True,
+        f_draw_layout_bbox=False,
+        f_draw_span_bbox=False,
         f_dump_md=True,
-        f_dump_middle_json=True,
-        f_dump_model_output=True,
-        f_dump_orig_pdf=True,
-        f_dump_content_list=True,
+        f_dump_middle_json=False,
+        f_dump_model_output=False,
+        f_dump_orig_pdf=False,
+        f_dump_content_list=False,
         f_make_md_mode=MakeMode.MM_MD,
         start_page_id=0,
         end_page_id=None,
