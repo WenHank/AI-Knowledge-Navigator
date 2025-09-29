@@ -1,25 +1,35 @@
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+"""
+Complete API: Document Upload + GraphDB Query System
+Two main endpoints: /upload (file to GraphDB) and /query (search GraphDB)
+"""
+
+import os
+import uuid
+import shutil
+import time
+import asyncio
+import traceback
+import psutil
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, validator
-from typing import Optional, List, Dict, Any
-import time
-import uuid
-import logging
-from datetime import datetime
-import traceback
-import asyncio
-from contextlib import asynccontextmanager
-import psutil
-import os
-
 import uvicorn
+import logging
+import torch
 
-from run_graph import agent_runner
-from llmrouter_agents.state_management import AgentState
-from miner_pdf_to import do_parse
-from graph_db import create_graphrag_from_markdown_folder
+# Document processing imports
+from miner_pdf_to import read_fn, do_parse
+
+# GraphRAG imports
+from llama_index.core import Settings, PropertyGraphIndex, Document
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 
 # Configure logging
 logging.basicConfig(
@@ -28,582 +38,568 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global state for managing resources
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+UPLOAD_DIR = Path("./uploads")
+OUTPUT_DIR = Path("./output")
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".jp2"}
+
+UPLOAD_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+# ============================================================================
+# GLOBAL STATE
+# ============================================================================
+
 app_state = {
     "timing_stats": {
         "total_requests": 0,
-        "total_processing_time": 0.0,
-        "average_processing_time": 0.0,
-        "min_processing_time": float('inf'),
-        "max_processing_time": 0.0,
-        "agent_usage": {},
-        "error_count": 0,
-        "successful_requests": 0,
+        "documents_processed": 0,
+        "documents_indexed": 0,
+        "queries_processed": 0,
     },
-    "start_time": datetime.utcnow(),
-    "request_count": 0
+    "start_time": datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow(),
+    "processing_jobs": {},
+    "embed_model": None,
+    "custom_llm": None,
+    "graph_store": None,
+    "query_engine": None,
 }
 
-def update_timing_stats(processing_time: float, agent_used: str, success: bool):
-    """Update global timing statistics"""
-    stats = app_state["timing_stats"]
-    
-    stats["total_requests"] += 1
-    
-    if success:
-        stats["successful_requests"] += 1
-        stats["total_processing_time"] += processing_time
-        stats["average_processing_time"] = stats["total_processing_time"] / stats["successful_requests"]
-        stats["min_processing_time"] = min(stats["min_processing_time"], processing_time)
-        stats["max_processing_time"] = max(stats["max_processing_time"], processing_time)
-        
-        # Track agent usage
-        if agent_used not in stats["agent_usage"]:
-            stats["agent_usage"][agent_used] = {"count": 0, "total_time": 0.0}
-        stats["agent_usage"][agent_used]["count"] += 1
-        stats["agent_usage"][agent_used]["total_time"] += processing_time
-        stats["agent_usage"][agent_used]["average_time"] = (
-            stats["agent_usage"][agent_used]["total_time"] / stats["agent_usage"][agent_used]["count"]
-        )
-    else:
-        stats["error_count"] += 1
+# ============================================================================
+# PYDANTIC MODELS
+# ============================================================================
 
-def print_timing_statistics():
-    """Print comprehensive timing statistics"""
-    stats = app_state["timing_stats"]
-    uptime = (datetime.utcnow() - app_state["start_time"]).total_seconds()
-    
-    print("\n" + "="*60)
-    print("📊 KNOWLEDGE NAVIGATOR API - PERFORMANCE SUMMARY")
-    print("="*60)
-    print(f"⏰ Uptime: {uptime:.1f}s ({uptime/3600:.2f}h)")
-    print(f"🚀 Startup Time: {app_state.get('startup_time', 0):.3f}s")
-    print(f"🔧 Workflow Init Time: {app_state.get('workflow_init_time', 0):.3f}s")
-    print(f"📈 Total Requests: {stats['total_requests']}")
-    print(f"✅ Successful: {stats['successful_requests']}")
-    print(f"❌ Errors: {stats['error_count']}")
-    print(f"📊 Success Rate: {(stats['successful_requests']/stats['total_requests']*100):.1f}%" if stats['total_requests'] > 0 else "N/A")
-    
-    if stats["successful_requests"] > 0:
-        print(f"\n🕒 TIMING STATISTICS:")
-        print(f"   Average Processing Time: {stats['average_processing_time']:.3f}s")
-        print(f"   Min Processing Time: {stats['min_processing_time']:.3f}s")
-        print(f"   Max Processing Time: {stats['max_processing_time']:.3f}s")
-        print(f"   Requests/Hour: {stats['total_requests'] / (uptime/3600):.1f}" if uptime > 0 else "N/A")
-        
-        print(f"\n🤖 AGENT USAGE:")
-        for agent, data in stats["agent_usage"].items():
-            print(f"   {agent}: {data['count']} requests ({data['average_time']:.3f}s avg)")
-    
-    print("="*60)
+class Neo4jConfig(BaseModel):
+    username: str = "neo4j"
+    password: str = "password"
+    url: str = "bolt://localhost:7687"
+    database: str = "neo4j"
 
-app = FastAPI(
-    title="Knowledge Navigator API",
-    description="""
-    🧠 **Knowledge Navigator API** - Intelligent Query Processing System
-    
-    This API provides intelligent query processing using a multi-agent workflow with comprehensive performance monitoring:
-    
-    ## Features
-    - **Smart Query Classification**: Automatically categorizes queries as simple or complex
-    - **Adaptive Processing**: Routes queries to appropriate processing agents
-    - **Document Retrieval**: Fetches relevant documents for context
-    - **Structured Responses**: Returns comprehensive, well-formatted results
-    - **Error Handling**: Robust error management with detailed feedback
-    - **Performance Monitoring**: Built-in request tracking and detailed timing analytics
-    - **Real-time Statistics**: Live performance metrics and agent usage tracking
-    
-    ## Workflow
-    1. **Preprocessing**: Query analysis and classification
-    2. **Routing**: Smart routing to local or cloud-based agents
-    3. **Processing**: Context-aware response generation
-    4. **Response**: Structured output with metadata and timing information
-    """,
-)
+class UploadResponse(BaseModel):
+    success: bool
+    job_id: str
+    filename: str
+    message: str
+    status: str
 
-# Add middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+class ProcessingStatus(BaseModel):
+    job_id: str
+    status: str
+    message: str
+    markdown_path: Optional[str] = None
+    graph_indexed: bool = False
+    processing_time: Optional[float] = None
 
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-
-# Request/Response Models
-class QueryRequest(BaseModel):
-    """Request model for query processing"""
+class GraphQueryRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=5000, description="User query to search the knowledge graph")
+    max_results: Optional[int] = Field(5, ge=1, le=20, description="Maximum number of results")
+    include_sources: Optional[bool] = Field(True, description="Include source documents")
     
-    user_query: str = Field(
-        ..., 
-        description="The user's query to process",
-        min_length=1,
-        max_length=10000,
-        example="What is machine learning and how does it work?"
-    )
-    session_id: Optional[str] = Field(
-        None, 
-        description="Optional session identifier for tracking",
-        example="session_123"
-    )
-    max_response_length: Optional[int] = Field(
-        500,
-        description="Maximum length of the response",
-        ge=50,
-        le=2000
-    )
-    include_sources: Optional[bool] = Field(
-        True,
-        description="Whether to include source documents in response"
-    )
-    include_timing: Optional[bool] = Field(
-        True,
-        description="Whether to include detailed timing information"
-    )
-    
-    @validator('user_query')
+    @validator('query')
     def validate_query(cls, v):
         if not v or not v.strip():
-            raise ValueError('Query cannot be empty or whitespace only')
+            raise ValueError('Query cannot be empty')
         return v.strip()
 
-
-class TimingInfo(BaseModel):
-    """Detailed timing information"""
-    
-    total_execution_time: float = Field(..., description="Total execution time in seconds")
-    preprocessing_time: Optional[float] = Field(None, description="Preprocessing time in seconds")
-    agent_processing_time: Optional[float] = Field(None, description="Agent processing time in seconds")
-    postprocessing_time: Optional[float] = Field(None, description="Postprocessing time in seconds")
-    queue_time: Optional[float] = Field(None, description="Time spent in queue")
-    tokens_per_second: Optional[float] = Field(None, description="Generation speed in tokens/second")
-    input_tokens: Optional[int] = Field(None, description="Number of input tokens")
-    output_tokens: Optional[int] = Field(None, description="Number of output tokens")
-
-
-class ProcessingMetadata(BaseModel):
-    """Metadata about the processing"""
-    
-    session_id: Optional[str]
-    processing_time: float = Field(..., description="Processing time in seconds")
-    timestamp: str = Field(..., description="ISO timestamp of the response")
-    request_id: str = Field(..., description="Unique request identifier")
-    routing_type: str = Field(..., description="Processing route taken")
-    agent_used: str = Field(..., description="Which agent processed the request")
-    timing_details: Optional[TimingInfo] = Field(None, description="Detailed timing breakdown")
-
-
-class ProcessingData(BaseModel):
-    """Data structure for successful processing results"""
-    
-    user_query: str = Field(..., description="Original user query")
-    final_answer: str = Field(..., description="Generated response to the query")
-    routing_type: Optional[int] = Field(None, description="Routing classification (1=simple, 2=complex)")
-    current_node: Optional[str] = Field(None, description="Current processing node")
-    node_status: Optional[Dict[str, str]] = Field(None, description="Status of processing nodes")
-    execution_summary: Optional[Dict[str, Any]] = Field(None, description="Execution summary")
-    processed_query: Optional[str] = Field(None, description="Preprocessed version of the query")
-    classification: Optional[int] = Field(None, description="Query complexity classification (1=simple, 2=complex)")
-    retrieved_docs: Optional[List[str]] = Field(None, description="Retrieved document snippets")
-    confidence_score: Optional[float] = Field(None, description="Confidence in the response (0-1)")
-    token_usage: Optional[Dict[str, int]] = Field(None, description="Token usage statistics")
-
-
-class QueryResponse(BaseModel):
-    """Response model for query processing"""
-    
-    success: bool = Field(..., description="Whether the request was successful")
-    data: Optional[ProcessingData] = Field(None, description="Processing results")
-    error: Optional[str] = Field(None, description="Error message if any")
-    metadata: ProcessingMetadata = Field(..., description="Processing metadata")
-
-
-class PerformanceStats(BaseModel):
-    """Performance statistics model"""
-    
-    total_requests: int
-    successful_requests: int
-    error_count: int
-    success_rate: float
-    average_processing_time: float
-    min_processing_time: float
-    max_processing_time: float
-    uptime_seconds: float
-    requests_per_hour: float
-    agent_usage: Dict[str, Dict[str, Any]]
-
+class GraphQueryResponse(BaseModel):
+    success: bool
+    query: str
+    answer: str
+    sources: Optional[List[str]] = None
+    metadata: Dict[str, Any]
+    error: Optional[str] = None
 
 class HealthResponse(BaseModel):
-    """Health check response model"""
-    
     status: str
     timestamp: str
     uptime_seconds: float
-    total_requests: int
+    documents_processed: int
+    documents_indexed: int
+    queries_processed: int
+    graph_connected: bool
     version: str
-    system_info: Dict[str, Any]
-    performance_stats: Optional[PerformanceStats] = None
 
+# ============================================================================
+# GLOBAL CONFIG
+# ============================================================================
 
-# Utility functions
-def generate_request_id() -> str:
-    """Generate a unique request ID"""
-    return f"req_{uuid.uuid4().hex[:12]}"
+neo4j_config = Neo4jConfig()
 
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def get_embed_model():
+    """Lazy load embedding model"""
+    if app_state["embed_model"] is None:
+        logger.info("Loading embedding model...")
+        app_state["embed_model"] = HuggingFaceEmbedding(
+            model_name="sentence-transformers/all-mpnet-base-v2",
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
+        Settings.embed_model = app_state["embed_model"]
+        logger.info("Embedding model loaded successfully")
+    return app_state["embed_model"]
+
+def get_custom_llm():
+    """Lazy load custom LLM"""
+    if app_state.get("custom_llm") is None:
+        logger.info("Loading custom LLM...")
+        from custom_llm import TheCustomLLM  # Import your custom LLM
+        app_state["custom_llm"] = TheCustomLLM()
+        Settings.llm = app_state["custom_llm"]
+        logger.info("Custom LLM loaded successfully")
+    return app_state["custom_llm"]
+
+def get_graph_store():
+    """Get or create Neo4j graph store connection"""
+    if app_state["graph_store"] is None:
+        try:
+            logger.info("Connecting to Neo4j...")
+            app_state["graph_store"] = Neo4jPropertyGraphStore(
+                username=neo4j_config.username,
+                password=neo4j_config.password,
+                url=neo4j_config.url,
+                database=neo4j_config.database
+            )
+            logger.info("Connected to Neo4j successfully")
+        except Exception as e:
+            logger.error(f"Failed to connect to Neo4j: {e}")
+            raise HTTPException(status_code=503, detail=f"Neo4j connection failed: {str(e)}")
+    return app_state["graph_store"]
+
+def validate_file_extension(filename: str) -> bool:
+    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
 
 def get_system_info() -> Dict[str, Any]:
-    """Get system information"""
     try:
         return {
             "cpu_percent": psutil.cpu_percent(interval=1),
             "memory_percent": psutil.virtual_memory().percent,
-            "disk_percent": psutil.disk_usage('/').percent,
-            "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         }
     except Exception as e:
         return {"error": str(e)}
 
+# ============================================================================
+# DOCUMENT PROCESSING FUNCTIONS
+# ============================================================================
 
-def extract_agent_used(result: Dict[str, Any]) -> str:
-    """Extract which agent was used from the result"""
-    # Check current_node first
-    if "current_node" in result:
-        return result["current_node"]
-    
-    # Check node_status for completed nodes
-    if "node_status" in result:
-        for node, status in result["node_status"].items():
-            if status == "completed":
-                return node
-    
-    # Check routing_type
-    if "routing_type" in result:
-        routing = result["routing_type"]
-        if isinstance(routing, dict):
-            if "router_decision" in routing:
-                return "router_agent"
-            elif "type" in routing:
-                return f"type_{routing['type']}_agent"
-    
-    # Default fallback
-    return "unknown_agent"
-
-
-def convert_workflow_result_to_processing_data(result: Dict[str, Any]) -> ProcessingData:
-    """Convert workflow result to ProcessingData format"""
-    
-    # Extract routing_type - it should now be a simple integer
-    routing_type = result.get("routing_type")
-    if isinstance(routing_type, dict):
-        # Handle legacy format if it's still a dict
-        if "type" in routing_type:
-            classification = routing_type["type"]
-        elif "router_decision" in routing_type and isinstance(routing_type["router_decision"], dict):
-            classification = routing_type["router_decision"].get("type")
-        else:
-            classification = 1
-        routing_type_value = classification
-    else:
-        # Handle new format - simple integer
-        routing_type_value = routing_type if routing_type in [1, 2] else 1
-        classification = routing_type_value
-    
-    return ProcessingData(
-        user_query=result.get("user_query", ""),
-        final_answer=result.get("final_answer", ""),
-        routing_type=routing_type_value,
-        current_node=result.get("current_node"),
-        node_status=result.get("node_status"),
-        execution_summary=result.get("execution_summary"),
-        classification=classification,
-        retrieved_docs=result.get("retrieved_docs", []),
-        processed_query=result.get("processed_query"),
-        confidence_score=result.get("confidence_score"),
-        token_usage=result.get("token_usage")
-    )
-
-
-async def process_query_async(initial_state: AgentState) -> Dict[str, Any]:
-    """Asynchronously process query using the agent workflow"""
-    if agent_runner is None:
-        raise RuntimeError("Workflow not initialized")
-    
+async def process_file_to_markdown(
+    file_path: Path,
+    job_id: str,
+    start_page: int = 0,
+    end_page: Optional[int] = None
+) -> str:
+    """Convert file to markdown using MinerU"""
     try:
-        # Add timing to the state
-        initial_state["start_time"] = time.time()
+        app_state["processing_jobs"][job_id]["status"] = "processing"
+        app_state["processing_jobs"][job_id]["message"] = "Converting to markdown..."
         
-        # Run in executor to prevent blocking
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, agent_runner.invoke, initial_state)
+        logger.info(f"Converting {file_path.name} to markdown...")
         
-        # Add total execution time if not present
-        if "timing" not in result:
-            result["timing"] = {}
-        if "total_execution_time" not in result["timing"]:
-            result["timing"]["total_execution_time"] = time.time() - initial_state["start_time"]
+        # Read file bytes
+        pdf_bytes = read_fn(file_path)
+        file_stem = file_path.stem
+        output_path = OUTPUT_DIR / file_stem
         
-        return result
+        # Parse the document
+        do_parse(
+            output_dir=str(output_path),
+            pdf_file_names=[file_stem],
+            pdf_bytes_list=[pdf_bytes],
+            p_lang_list=["en"],
+            backend="pipeline",
+            parse_method="auto",
+            formula_enable=True,
+            table_enable=True,
+            f_dump_md=True,
+            f_dump_middle_json=False,
+            f_dump_model_output=False,
+            f_dump_orig_pdf=False,
+            f_dump_content_list=False,
+            start_page_id=start_page,
+            end_page_id=end_page
+        )
+        
+        # Find the generated markdown file
+        md_file = output_path / f"{file_stem}.md"
+        if not md_file.exists():
+            raise FileNotFoundError(f"Markdown file not generated: {md_file}")
+        
+        app_state["processing_jobs"][job_id]["markdown_path"] = str(md_file)
+        app_state["timing_stats"]["documents_processed"] += 1
+        
+        logger.info(f"Markdown conversion completed: {md_file}")
+        return str(md_file)
+        
     except Exception as e:
-        logger.error(f"Agent processing failed: {e}")
+        app_state["processing_jobs"][job_id]["status"] = "failed"
+        app_state["processing_jobs"][job_id]["message"] = f"Conversion failed: {str(e)}"
+        logger.error(f"Markdown conversion failed: {e}")
         raise
 
+async def index_markdown_to_graph(markdown_path: str, job_id: str):
+    """Index markdown content to Neo4j graph database"""
+    try:
+        app_state["processing_jobs"][job_id]["status"] = "indexing"
+        app_state["processing_jobs"][job_id]["message"] = "Indexing to graph database..."
+        
+        logger.info(f"Indexing {markdown_path} to Neo4j...")
+        
+        # Load embedding model AND custom LLM
+        get_embed_model()
+        get_custom_llm()  # This is critical!
+        
+        # Get graph store
+        graph_store = get_graph_store()
+        
+        # Read markdown content
+        md_path = Path(markdown_path)
+        with open(md_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        if not content.strip():
+            raise ValueError("Markdown file is empty")
+        
+        # Create document
+        document = Document(
+            text=content,
+            metadata={
+                "filename": md_path.name,
+                "job_id": job_id,
+                "source_path": str(md_path),
+                "indexed_at": (datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()).isoformat()
+            }
+        )
+        
+        # Build or update graph index with explicit LLM
+        logger.info("Building PropertyGraph index...")
+        index = PropertyGraphIndex.from_documents(
+            [document],
+            property_graph_store=graph_store,
+            llm=app_state["custom_llm"],  # Explicitly pass the custom LLM
+            embed_model=app_state["embed_model"],  # Explicitly pass the embedding model
+            embed_kg_nodes=True,
+            show_progress=True
+        )
+        
+        # Update query engine with latest index
+        app_state["query_engine"] = index.as_query_engine(
+            include_text=True,
+            response_mode="tree_summarize",
+            llm=app_state["custom_llm"]  # Use custom LLM for queries too
+        )
+        
+        app_state["processing_jobs"][job_id]["status"] = "completed"
+        app_state["processing_jobs"][job_id]["message"] = "Successfully indexed to graph database"
+        app_state["processing_jobs"][job_id]["graph_indexed"] = True
+        app_state["timing_stats"]["documents_indexed"] += 1
+        
+        logger.info(f"Successfully indexed {md_path.name} to Neo4j")
+        return True
+        
+    except Exception as e:
+        app_state["processing_jobs"][job_id]["status"] = "failed"
+        app_state["processing_jobs"][job_id]["message"] = f"Graph indexing failed: {str(e)}"
+        app_state["processing_jobs"][job_id]["graph_indexed"] = False
+        logger.error(f"Graph indexing failed: {e}")
+        raise
 
-# Background task functions
-async def log_request_success(request_id: str, processing_time: float, agent_used: str):
-    """Log successful request processing"""
-    logger.info(f"✅ Request {request_id} processed successfully by {agent_used} in {processing_time:.3f}s")
-    update_timing_stats(processing_time, agent_used, True)
+# ============================================================================
+# FASTAPI APP
+# ============================================================================
 
+app = FastAPI(
+    title="Document Processing & Knowledge Graph API",
+    description="""
+    Complete document processing and knowledge graph query system.
+    
+    ## Workflow:
+    1. Upload PDF/image files via `/upload`
+    2. System converts to markdown and indexes to Neo4j
+    3. Query the knowledge graph via `/query_graph`
+    
+    ## Features:
+    - Automatic document conversion (MinerU)
+    - Neo4j graph database storage
+    - Intelligent query processing with GraphRAG
+    - Background processing for uploads
+    """,
+    version="2.0.0"
+)
 
-async def log_request_error(request_id: str, error: str, processing_time: float):
-    """Log failed request processing"""
-    logger.error(f"❌ Request {request_id} failed after {processing_time:.3f}s: {error}")
-    update_timing_stats(processing_time, "error", False)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
 
-# API Endpoints
+@app.get("/", tags=["System"])
+async def root():
+    return {
+        "message": "Document Processing & Knowledge Graph API",
+        "version": "2.0.0",
+        "endpoints": {
+            "health": "GET /health",
+            "upload": "POST /upload",
+            "query_graph": "POST /query_graph",
+            "status": "GET /status/{job_id}",
+            "config": "GET/POST /config/neo4j"
+        }
+    }
+
 @app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
-    """
-    🏥 **Health Check**
-    
-    Get comprehensive system health and performance statistics.
-    """
-    uptime = (datetime.utcnow() - app_state["start_time"]).total_seconds()
+    """System health check"""
+    current_time = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
+    uptime = (current_time - app_state["start_time"]).total_seconds()
     stats = app_state["timing_stats"]
     
-    # Create performance stats
-    performance_stats = None
-    if stats["total_requests"] > 0:
-        performance_stats = PerformanceStats(
-            total_requests=stats["total_requests"],
-            successful_requests=stats["successful_requests"],
-            error_count=stats["error_count"],
-            success_rate=stats["successful_requests"] / stats["total_requests"] * 100,
-            average_processing_time=stats["average_processing_time"],
-            min_processing_time=stats["min_processing_time"] if stats["min_processing_time"] != float('inf') else 0.0,
-            max_processing_time=stats["max_processing_time"],
-            uptime_seconds=uptime,
-            requests_per_hour=stats["total_requests"] / (uptime / 3600) if uptime > 0 else 0.0,
-            agent_usage=stats["agent_usage"]
-        )
+    # Check Neo4j connection
+    graph_connected = False
+    try:
+        if app_state["graph_store"] is not None:
+            graph_connected = True
+    except:
+        pass
     
     return HealthResponse(
-        status="healthy" if agent_runner is not None else "initializing",
-        timestamp=datetime.utcnow().isoformat(),
+        status="healthy",
+        timestamp=current_time.isoformat(),
         uptime_seconds=round(uptime, 2),
-        total_requests=stats["total_requests"],
-        version="2.1.0",
-        system_info=get_system_info(),
-        performance_stats=performance_stats
+        documents_processed=stats["documents_processed"],
+        documents_indexed=stats["documents_indexed"],
+        queries_processed=stats["queries_processed"],
+        graph_connected=graph_connected,
+        version="2.0.0"
     )
 
-
-@app.get("/stats", response_model=Dict[str, Any], tags=["System"])
-async def get_performance_stats():
-    """
-    📊 **Performance Statistics**
-    
-    Get detailed performance and timing statistics.
-    """
-    return {
-        "system_info": get_system_info(),
-        "timing_stats": app_state["timing_stats"],
-        "uptime_seconds": (datetime.utcnow() - app_state["start_time"]).total_seconds(),
-        "status": "healthy" if agent_runner is not None else "initializing",
-        "workflow_initialized": agent_runner is not None,
-    }
-
-
-@app.post("/query", response_model=QueryResponse, tags=["Query Processing"])
-async def process_query(
-    request: QueryRequest, 
+@app.post("/upload", response_model=UploadResponse, tags=["Document Processing"])
+async def upload_and_index(
     background_tasks: BackgroundTasks,
-    http_request: Request
+    file: UploadFile = File(...),
+    start_page: int = Form(0),
+    end_page: Optional[int] = Form(None),
 ):
     """
-    🧠 **Process User Query**
+    Upload a file, convert to markdown, and index to Neo4j GraphDB
     
-    Process user queries using the intelligent multi-agent workflow with comprehensive timing analysis.
+    Args:
+        file: PDF or image file
+        start_page: Starting page number (default: 0)
+        end_page: Ending page number (default: None = all pages)
     
-    The system automatically:
-    - Analyzes and classifies your query
-    - Routes to the most appropriate processing agent
-    - Retrieves relevant context documents
-    - Generates comprehensive, accurate responses
-    - Provides detailed timing and performance metrics
+    Returns:
+        Job ID for tracking processing status
+    """
     
-    **Example Usage:**
-    ```json
-    {
-        "user_query": "Explain quantum computing in simple terms",
-        "session_id": "my_session_123",
-        "max_response_length": 300,
-        "include_timing": true
+    # Validate file extension
+    if not validate_file_extension(file.filename):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())
+    
+    # Save uploaded file
+    file_path = UPLOAD_DIR / f"{job_id}_{file.filename}"
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+    
+    # Create processing job
+    app_state["processing_jobs"][job_id] = {
+        "status": "pending",
+        "message": "Job created",
+        "filename": file.filename,
+        "markdown_path": None,
+        "graph_indexed": False,
+        "created_at": time.time()
     }
-    ```
-    """
-    start_time = time.time()
-    request_id = generate_request_id()
-    timestamp = datetime.utcnow().isoformat()
     
-    # Track request
-    app_state["request_count"] = app_state.get("request_count", 0) + 1
-    
-    logger.info(f"🔄 Processing request {request_id}: {request.user_query[:100]}...")
-    
-    try:
-        # Prepare initial state
-        preprocessing_start = time.time()
-        initial_state: AgentState = {
-            "user_query": request.user_query,
-            "max_response_length": request.max_response_length,
-            "request_id": request_id,
-        }
-        preprocessing_time = time.time() - preprocessing_start
-        
-        # Process query asynchronously
-        agent_start = time.time()
-        result = await process_query_async(initial_state)
-        agent_time = time.time() - agent_start
-        
-        # Post-processing
-        postprocessing_start = time.time()
-        
-        # Extract agent used and calculate processing time
-        agent_used = extract_agent_used(result)
-        processing_time = time.time() - start_time
-        
-        # Convert workflow result to ProcessingData format
-        processing_data = convert_workflow_result_to_processing_data(result)
-        
-        postprocessing_time = time.time() - postprocessing_start
-        
-        # Create detailed timing info
-        timing_details = None
-        if request.include_timing:
-            timing_from_result = result.get("timing", {})
-            timing_details = TimingInfo(
-                total_execution_time=processing_time,
-                preprocessing_time=preprocessing_time,
-                agent_processing_time=agent_time,
-                postprocessing_time=postprocessing_time,
-                tokens_per_second=timing_from_result.get("tokens_per_second"),
-                input_tokens=timing_from_result.get("input_tokens"),
-                output_tokens=timing_from_result.get("output_tokens")
-            )
-        
-        # Create metadata
-        metadata = ProcessingMetadata(
-            session_id=request.session_id,
-            processing_time=round(processing_time, 3),
-            timestamp=timestamp,
-            request_id=request_id,
-            routing_type=f"type_{result.get('routing_type', 1)}",
-            agent_used=agent_used,
-            timing_details=timing_details
-        )
-        
-        # Log successful processing in background
-        background_tasks.add_task(
-            log_request_success, 
-            request_id, 
-            processing_time, 
-            agent_used
-        )
-        
-        logger.info(f"✅ Request {request_id} completed in {processing_time:.3f}s")
-        
-        return QueryResponse(
-            success=True,
-            data=processing_data,
-            error=None,
-            metadata=metadata
-        )
-        
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions
-    except Exception as e:
-        processing_time = time.time() - start_time
-        
-        # Log error details
-        error_details = f"Request {request_id} failed: {str(e)}\n{traceback.format_exc()}"
-        logger.error(error_details)
-        
-        # Create error metadata
-        metadata = ProcessingMetadata(
-            session_id=request.session_id,
-            processing_time=round(processing_time, 3),
-            timestamp=timestamp,
-            request_id=request_id,
-            routing_type="error",
-            agent_used="none"
-        )
-        
-        # Log failed processing in background
-        background_tasks.add_task(
-            log_request_error, 
-            request_id, 
-            str(e), 
-            processing_time
-        )
-        
-        return QueryResponse(
-            success=False,
-            data=None,
-            error=f"Processing failed: {str(e)}",
-            metadata=metadata
-        )
-
-
-# Testing endpoint for development
-@app.post("/test", tags=["Testing"])
-async def test_workflow():
-    """
-    🧪 **Test Workflow**
-    
-    Test the workflow with a simple query for development purposes.
-    """
-    if agent_runner is None:
-        raise HTTPException(status_code=503, detail="Workflow not initialized")
-    
-    try:
-        initial_state = {
-            "user_query": "What is the weather today?",
-        }
-        
+    # Background processing pipeline
+    async def process_pipeline():
         start_time = time.time()
-        result = agent_runner.invoke(initial_state)
-        processing_time = time.time() - start_time
-        
-        return {
-            "success": True,
-            "raw_result": result,  # Return the full raw result for debugging
-            "processing_time": round(processing_time, 3),
-            "agent_used": extract_agent_used(result)
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        }
+        try:
+            # Step 1: Convert to markdown
+            md_path = await process_file_to_markdown(file_path, job_id, start_page, end_page)
+            
+            # Step 2: Index to Neo4j
+            await index_markdown_to_graph(md_path, job_id)
+            
+            processing_time = time.time() - start_time
+            app_state["processing_jobs"][job_id]["processing_time"] = processing_time
+            
+            logger.info(f"Job {job_id} completed in {processing_time:.2f}s")
+            
+        except Exception as e:
+            logger.error(f"Processing pipeline failed for job {job_id}: {e}")
+            traceback.print_exc()
+    
+    background_tasks.add_task(process_pipeline)
+    
+    return UploadResponse(
+        success=True,
+        job_id=job_id,
+        filename=file.filename,
+        message="File uploaded. Processing started in background.",
+        status="pending"
+    )
 
-@app.post("/pdf_save_graph_db", tags=["System"])
-async def pdf_save_graph_db():
+@app.get("/status/{job_id}", response_model=ProcessingStatus, tags=["Document Processing"])
+async def get_job_status(job_id: str):
+    """Get processing status for a job"""
+    job = app_state["processing_jobs"].get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return ProcessingStatus(
+        job_id=job_id,
+        status=job["status"],
+        message=job["message"],
+        markdown_path=job.get("markdown_path"),
+        graph_indexed=job.get("graph_indexed", False),
+        processing_time=job.get("processing_time")
+    )
+
+@app.post("/query_graph", response_model=GraphQueryResponse, tags=["Knowledge Graph Query"])
+async def query_knowledge_graph(request: GraphQueryRequest):
     """
-    Save PDF data to the graph database.
+    Query the knowledge graph with natural language
+    
+    Args:
+        request: Query request with user query and options
+    
+    Returns:
+        Answer from the knowledge graph with sources and metadata
     """
+    
+    start_time = time.time()
+    current_time = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
+    
+    # Check if query engine is initialized
+    if app_state["query_engine"] is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No documents indexed yet. Please upload documents first via /upload"
+        )
+    
     try:
-        from graph_db import save_pdf_to_neo4j
-        save_pdf_to_neo4j()
-        return {"success": True, "message": "PDF data saved to graph database successfully."}
+        logger.info(f"Processing graph query: {request.query[:100]}...")
+        
+        # Query the graph
+        response = app_state["query_engine"].query(request.query)
+        
+        # Extract answer
+        answer = str(response)
+        
+        # Extract sources if requested
+        sources = None
+        if request.include_sources:
+            sources = []
+            if hasattr(response, 'source_nodes'):
+                for node in response.source_nodes[:request.max_results]:
+                    source_text = node.text[:200] + "..." if len(node.text) > 200 else node.text
+                    sources.append(source_text)
+        
+        processing_time = time.time() - start_time
+        app_state["timing_stats"]["queries_processed"] += 1
+        
+        logger.info(f"Query processed in {processing_time:.2f}s")
+        
+        return GraphQueryResponse(
+            success=True,
+            query=request.query,
+            answer=answer,
+            sources=sources,
+            metadata={
+                "processing_time": round(processing_time, 3),
+                "timestamp": current_time.isoformat(),
+                "documents_in_graph": app_state["timing_stats"]["documents_indexed"]
+            },
+            error=None
+        )
+        
     except Exception as e:
-        logger.error(f"Error saving PDF data to graph database: {e}")
-        raise HTTPException(status_code=500, detail=f"Error saving PDF data: {str(e)}")
+        processing_time = time.time() - start_time
+        error_msg = f"Query failed: {str(e)}"
+        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        
+        return GraphQueryResponse(
+            success=False,
+            query=request.query,
+            answer="",
+            sources=None,
+            metadata={
+                "processing_time": round(processing_time, 3),
+                "timestamp": current_time.isoformat()
+            },
+            error=error_msg
+        )
+
+@app.get("/config/neo4j", tags=["Configuration"])
+async def get_neo4j_config():
+    """Get current Neo4j configuration (password hidden)"""
+    return {
+        "username": neo4j_config.username,
+        "password": "***" if neo4j_config.password else None,
+        "url": neo4j_config.url,
+        "database": neo4j_config.database,
+        "connected": app_state["graph_store"] is not None
+    }
+
+@app.post("/config/neo4j", tags=["Configuration"])
+async def update_neo4j_config(config: Neo4jConfig):
+    """Update Neo4j configuration (requires restart of connections)"""
+    global neo4j_config
+    neo4j_config = config
+    
+    # Reset connections to force reconnection with new config
+    app_state["graph_store"] = None
+    app_state["query_engine"] = None
+    
+    logger.info("Neo4j configuration updated. Connections will be re-established on next use.")
+    
+    return {
+        "message": "Neo4j configuration updated successfully",
+        "config": {
+            "username": config.username,
+            "url": config.url,
+            "database": config.database
+        }
+    }
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("=" * 60)
+    print("🚀 Starting Document Processing & Knowledge Graph API")
+    print("=" * 60)
+    print(f"📁 Upload Directory: {UPLOAD_DIR.absolute()}")
+    print(f"📄 Output Directory: {OUTPUT_DIR.absolute()}")
+    print(f"🔗 Neo4j URL: {neo4j_config.url}")
+    print("=" * 60)
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        reload=False
+    )
