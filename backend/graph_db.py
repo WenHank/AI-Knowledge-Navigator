@@ -1,7 +1,7 @@
 import os
 import time
 import torch
-import json  # Missing import
+import json
 from typing import Any, Dict, Optional
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -13,7 +13,7 @@ from llama_index.core import Settings, PropertyGraphIndex, SimpleDirectoryReader
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 
-class YourCustomLLM(CustomLLM):
+class TheCustomLLM(CustomLLM):
     """Your existing LLM class with minimal LlamaIndex integration"""
     
     # Define fields that Pydantic can accept
@@ -295,7 +295,7 @@ def create_graphrag_from_markdown_folder(
     print("🚀 Initializing GraphRAG with your custom LLM...")
     
     # 1. Initialize your custom LLM (this is all you asked for!)
-    llm = YourCustomLLM()
+    llm = TheCustomLLM()
     
     # 2. Set up embedding model (local, no API costs)
     embed_model = HuggingFaceEmbedding(
@@ -400,8 +400,6 @@ if __name__ == "__main__":
             markdown_folder_path=MARKDOWN_PATH,
             neo4j_config=neo4j_config  # Now using Neo4j!
         )
-        
-        # Rest of your code...
         
         # Now you can query the system
         query_engine = index.as_query_engine(

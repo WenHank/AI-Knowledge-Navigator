@@ -17,7 +17,9 @@ import os
 import uvicorn
 
 from run_graph import agent_runner
-from agents.state_management import AgentState
+from llmrouter_agents.state_management import AgentState
+from miner_pdf_to import do_parse
+from graph_db import create_graphrag_from_markdown_folder
 
 # Configure logging
 logging.basicConfig(
@@ -590,7 +592,18 @@ async def test_workflow():
             "traceback": traceback.format_exc()
         }
 
-
+@app.post("/pdf_save_graph_db", tags=["System"])
+async def pdf_save_graph_db():
+    """
+    Save PDF data to the graph database.
+    """
+    try:
+        from graph_db import save_pdf_to_neo4j
+        save_pdf_to_neo4j()
+        return {"success": True, "message": "PDF data saved to graph database successfully."}
+    except Exception as e:
+        logger.error(f"Error saving PDF data to graph database: {e}")
+        raise HTTPException(status_code=500, detail=f"Error saving PDF data: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

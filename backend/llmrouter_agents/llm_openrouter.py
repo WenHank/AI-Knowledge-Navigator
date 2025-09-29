@@ -3,7 +3,7 @@ import json
 from dotenv import load_dotenv
 import requests
 
-from agents.base import BaseAgent
+from llmrouter_agents.base import BaseAgent
 
 load_dotenv()
  

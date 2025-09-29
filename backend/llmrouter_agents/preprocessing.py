@@ -7,9 +7,9 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 
-from agents.base import BaseAgent
-from agents.prompts import PROCESSING_PROMPT
-from agents.extract_json import extract_and_clean_json
+from llmrouter_agents.base import BaseAgent
+from llmrouter_agents.prompts import PROCESSING_PROMPT
+from llmrouter_agents.extract_json import extract_and_clean_json
 
 # for test it locally
 # from base import BaseAgent
@@ -121,7 +121,7 @@ class FineTunedRouter:
 class PreprocessingAgent(BaseAgent):
     def __init__(self, use_local_router=True):
         self.use_local_router = use_local_router
-        router_path = "./agents/routellm_fine_tuned_router"
+        router_path = "./llmrouter_agents/routellm_fine_tuned_router"
         
         # Initialize local router if requested
         if self.use_local_router and router_path:

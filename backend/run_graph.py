@@ -4,10 +4,10 @@ import time
 from langgraph.graph import StateGraph, END, START
 from langgraph.types import Command
 
-from agents.preprocessing import PreprocessingAgent
-from agents.llm_openrouter import OpenrouterAgent
-from agents.llm_localmodel import LocalAgent
-from agents.state_management import AgentState
+from llmrouter_agents.preprocessing import PreprocessingAgent
+from llmrouter_agents.llm_openrouter import OpenrouterAgent
+from llmrouter_agents.llm_localmodel import LocalAgent
+from llmrouter_agents.state_management import AgentState
 
 # Initialize agents
 pre_agent = PreprocessingAgent()

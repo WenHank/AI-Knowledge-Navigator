@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Optional, Dict, Any
 
-from agents.base import BaseAgent
+from llmrouter_agents.base import BaseAgent
 
 load_dotenv()
 
