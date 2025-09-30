@@ -251,7 +251,7 @@ async def index_markdown_to_graph(markdown_path: str, job_id: str):
         
         # Load embedding model AND custom LLM
         get_embed_model()
-        get_custom_llm()  # This is critical!
+        get_custom_llm()
         
         # Get graph store
         graph_store = get_graph_store()
@@ -275,22 +275,28 @@ async def index_markdown_to_graph(markdown_path: str, job_id: str):
             }
         )
         
-        # Build or update graph index with explicit LLM
+        # Build or update graph index using async method
         logger.info("Building PropertyGraph index...")
-        index = PropertyGraphIndex.from_documents(
-            [document],
-            property_graph_store=graph_store,
-            llm=app_state["custom_llm"],  # Explicitly pass the custom LLM
-            embed_model=app_state["embed_model"],  # Explicitly pass the embedding model
-            embed_kg_nodes=True,
-            show_progress=True
+        
+        # Use asyncio.create_task or run in executor
+        loop = asyncio.get_event_loop()
+        index = await loop.run_in_executor(
+            None,
+            lambda: PropertyGraphIndex.from_documents(
+                [document],
+                property_graph_store=graph_store,
+                llm=app_state["custom_llm"],
+                embed_model=app_state["embed_model"],
+                embed_kg_nodes=True,
+                show_progress=True
+            )
         )
         
         # Update query engine with latest index
         app_state["query_engine"] = index.as_query_engine(
             include_text=True,
             response_mode="tree_summarize",
-            llm=app_state["custom_llm"]  # Use custom LLM for queries too
+            llm=app_state["custom_llm"]
         )
         
         app_state["processing_jobs"][job_id]["status"] = "completed"
@@ -306,8 +312,8 @@ async def index_markdown_to_graph(markdown_path: str, job_id: str):
         app_state["processing_jobs"][job_id]["message"] = f"Graph indexing failed: {str(e)}"
         app_state["processing_jobs"][job_id]["graph_indexed"] = False
         logger.error(f"Graph indexing failed: {e}")
+        traceback.print_exc()
         raise
-
 # ============================================================================
 # FASTAPI APP
 # ============================================================================
