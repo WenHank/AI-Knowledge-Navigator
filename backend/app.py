@@ -1,8 +1,3 @@
-"""
-Complete API: Document Upload + GraphDB Query System
-Two main endpoints: /upload (file to GraphDB) and /query (search GraphDB)
-"""
-
 import os
 import uuid
 import shutil
@@ -11,25 +6,24 @@ import asyncio
 import traceback
 import psutil
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from datetime import datetime
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, validator
+
 import uvicorn
 import logging
 import torch
 
-# Document processing imports
 from miner_pdf_to import read_fn, do_parse
 
-# GraphRAG imports
 from llama_index.core import Settings, PropertyGraphIndex, Document
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
+
+from config import (Neo4jConfig, UploadResponse, ProcessingStatus, GraphQueryRequest, GraphQueryResponse, HealthResponse)
 
 # Configure logging
 logging.basicConfig(
@@ -67,60 +61,6 @@ app_state = {
     "graph_store": None,
     "query_engine": None,
 }
-
-# ============================================================================
-# PYDANTIC MODELS
-# ============================================================================
-
-class Neo4jConfig(BaseModel):
-    username: str = "neo4j"
-    password: str = "password"
-    url: str = "bolt://localhost:7687"
-    database: str = "neo4j"
-
-class UploadResponse(BaseModel):
-    success: bool
-    job_id: str
-    filename: str
-    message: str
-    status: str
-
-class ProcessingStatus(BaseModel):
-    job_id: str
-    status: str
-    message: str
-    markdown_path: Optional[str] = None
-    graph_indexed: bool = False
-    processing_time: Optional[float] = None
-
-class GraphQueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=5000, description="User query to search the knowledge graph")
-    max_results: Optional[int] = Field(5, ge=1, le=20, description="Maximum number of results")
-    include_sources: Optional[bool] = Field(True, description="Include source documents")
-    
-    @validator('query')
-    def validate_query(cls, v):
-        if not v or not v.strip():
-            raise ValueError('Query cannot be empty')
-        return v.strip()
-
-class GraphQueryResponse(BaseModel):
-    success: bool
-    query: str
-    answer: str
-    sources: Optional[List[str]] = None
-    metadata: Dict[str, Any]
-    error: Optional[str] = None
-
-class HealthResponse(BaseModel):
-    status: str
-    timestamp: str
-    uptime_seconds: float
-    documents_processed: int
-    documents_indexed: int
-    queries_processed: int
-    graph_connected: bool
-    version: str
 
 # ============================================================================
 # GLOBAL CONFIG
