@@ -12,6 +12,7 @@ from datetime import datetime
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from contextlib import asynccontextmanager
 
 import uvicorn
 import logging
@@ -95,20 +96,46 @@ def get_custom_llm():
     return app_state["custom_llm"]
 
 def get_graph_store():
-    """Get or create Neo4j graph store connection"""
+    """Get or create Neo4j graph store connection with better error handling"""
     if app_state["graph_store"] is None:
         try:
-            logger.info("Connecting to Neo4j...")
+            logger.info(f"Attempting to connect to Neo4j at {neo4j_config.url}...")
+            logger.info(f"Username: {neo4j_config.username}")
+            logger.info(f"Database: {neo4j_config.database}")
+            
+            # Test basic connectivity first
+            from neo4j import GraphDatabase
+            driver = GraphDatabase.driver(
+                neo4j_config.url,
+                auth=(neo4j_config.username, neo4j_config.password)
+            )
+            
+            # Verify connection
+            with driver.session(database=neo4j_config.database) as session:
+                result = session.run("RETURN 1 as num")
+                result.single()
+                logger.info("✅ Neo4j basic connection test passed")
+            
+            driver.close()
+            
+            # Now create the PropertyGraphStore
             app_state["graph_store"] = Neo4jPropertyGraphStore(
                 username=neo4j_config.username,
                 password=neo4j_config.password,
                 url=neo4j_config.url,
                 database=neo4j_config.database
             )
-            logger.info("Connected to Neo4j successfully")
+            logger.info("✅ Connected to Neo4j PropertyGraphStore successfully")
+            
         except Exception as e:
-            logger.error(f"Failed to connect to Neo4j: {e}")
-            raise HTTPException(status_code=503, detail=f"Neo4j connection failed: {str(e)}")
+            error_msg = f"Failed to connect to Neo4j: {str(e)}"
+            logger.error(error_msg)
+            logger.error(f"Connection details - URL: {neo4j_config.url}, Database: {neo4j_config.database}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=503, 
+                detail=f"Neo4j connection failed: {str(e)}. Please check: 1) Neo4j is running, 2) Credentials are correct, 3) URL format is correct"
+            )
     return app_state["graph_store"]
 
 def validate_file_extension(filename: str) -> bool:
@@ -254,10 +281,158 @@ async def index_markdown_to_graph(markdown_path: str, job_id: str):
         logger.error(f"Graph indexing failed: {e}")
         traceback.print_exc()
         raise
+
 # ============================================================================
 # FASTAPI APP
 # ============================================================================
 
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+def restore_query_engine_from_existing_graph():
+    """
+    Restore query engine from existing Neo4j graph data
+    This allows querying previously indexed documents without re-uploading
+    """
+    try:
+        logger.info("Attempting to restore query engine from existing graph data...")
+        
+        # Get graph store
+        graph_store = get_graph_store()
+        
+        # Load models
+        embed_model = get_embed_model()
+        custom_llm = get_custom_llm()
+        
+        # Check if there's any data in the graph
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            neo4j_config.url,
+            auth=(neo4j_config.username, neo4j_config.password)
+        )
+        
+        with driver.session(database=neo4j_config.database) as session:
+            # Check if there are any nodes in the graph
+            result = session.run("MATCH (n) RETURN count(n) as count")
+            node_count = result.single()["count"]
+            logger.info(f"Found {node_count} nodes in Neo4j graph")
+            
+            if node_count > 0:
+                # Create PropertyGraphIndex from existing graph store
+                logger.info("Restoring PropertyGraphIndex from existing data...")
+                
+                index = PropertyGraphIndex.from_existing(
+                    property_graph_store=graph_store,
+                    llm=custom_llm,
+                    embed_model=embed_model,
+                    embed_kg_nodes=True
+                )
+                
+                # Create query engine
+                app_state["query_engine"] = index.as_query_engine(
+                    include_text=True,
+                    response_mode="tree_summarize",
+                    llm=custom_llm
+                )
+                
+                logger.info(f"✅ Query engine restored successfully! Ready to query {node_count} nodes.")
+                
+                # Update statistics
+                app_state["timing_stats"]["documents_indexed"] = node_count
+                
+                return True
+            else:
+                logger.info("No existing data found in Neo4j graph. Upload documents to get started.")
+                return False
+        
+        driver.close()
+        
+    except Exception as e:
+        logger.error(f"Failed to restore query engine: {e}")
+        logger.error(traceback.format_exc())
+        return False
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events"""
+    # ============ STARTUP ============
+    logger.info("="*60)
+    logger.info("🚀 Application Starting Up")
+    logger.info("="*60)
+    
+    # Test Neo4j connection
+    neo4j_connected = False
+    try:
+        logger.info("Testing Neo4j connection...")
+        from neo4j import GraphDatabase
+        
+        driver = GraphDatabase.driver(
+            neo4j_config.url,
+            auth=(neo4j_config.username, neo4j_config.password)
+        )
+        
+        with driver.session(database=neo4j_config.database) as session:
+            result = session.run("RETURN 1 as num")
+            result.single()
+            logger.info("✅ Neo4j connection test: SUCCESS")
+            neo4j_connected = True
+        
+        driver.close()
+        
+        # Pre-initialize graph store
+        get_graph_store()
+        logger.info("✅ Neo4j PropertyGraphStore initialized")
+        
+        # Try to restore query engine from existing data
+        if neo4j_connected:
+            logger.info("-"*60)
+            logger.info("🔄 Attempting to restore from existing graph data...")
+            restored = restore_query_engine_from_existing_graph()
+            if restored:
+                logger.info("✅ System ready to query existing documents!")
+            else:
+                logger.info("ℹ️  No existing documents found. Upload documents to get started.")
+            logger.info("-"*60)
+        
+    except Exception as e:
+        logger.error("="*60)
+        logger.error("❌ NEO4J CONNECTION FAILED!")
+        logger.error(f"Error: {str(e)}")
+        logger.error(f"URL: {neo4j_config.url}")
+        logger.error(f"Database: {neo4j_config.database}")
+        logger.error(f"Username: {neo4j_config.username}")
+        logger.error("="*60)
+        logger.warning("⚠️  Server will start but Neo4j features will be unavailable")
+        logger.warning("⚠️  Please check Neo4j configuration and restart the server")
+        logger.error("="*60)
+    
+    logger.info("="*60)
+    logger.info("✅ Startup Complete")
+    logger.info("="*60)
+    
+    # Yield control to the application
+    yield
+    
+    # ============ SHUTDOWN ============
+    logger.info("="*60)
+    logger.info("🛑 Application Shutting Down")
+    logger.info("="*60)
+    
+    # Cleanup resources
+    if app_state.get("graph_store") is not None:
+        try:
+            logger.info("Closing Neo4j connections...")
+            app_state["graph_store"] = None
+            logger.info("✅ Connections closed")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+    
+    logger.info("="*60)
+    logger.info("✅ Shutdown Complete")
+    logger.info("="*60)
+    
+# Create FastAPI app WITH the lifespan parameter
 app = FastAPI(
     title="Document Processing & Knowledge Graph API",
     description="""
@@ -274,7 +449,8 @@ app = FastAPI(
     - Intelligent query processing with GraphRAG
     - Background processing for uploads
     """,
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan  # ← Add this parameter
 )
 
 app.add_middleware(
