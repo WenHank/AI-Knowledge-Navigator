@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import requests
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 
 from llmrouter_agents.base import BaseAgent
@@ -51,13 +51,18 @@ class FineTunedRouter:
                 self.model_path,
                 trust_remote_code=True
             )
-            
-            # Load base model
+            # Change from load_in_8bit=True to 4bit for a smaller footprint
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4",
+                llm_int8_enable_fp32_cpu_offload=True  # Permission to use RAM if VRAM is full
+            )
+
             base_model = AutoModelForCausalLM.from_pretrained(
                 base_model_id,
-                load_in_8bit=True,
-                torch_dtype=torch.float16,
-                device_map={"": 0} if torch.cuda.is_available() else None,
+                quantization_config=bnb_config,
+                device_map="auto", # or "balanced" to help with the offload
                 trust_remote_code=True
             )
             

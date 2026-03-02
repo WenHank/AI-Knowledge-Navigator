@@ -8,7 +8,7 @@ from transformers import (
     DataCollatorForLanguageModeling
 )
 from datasets import load_dataset
-import pandas as pd
+# import pandas as pd
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 import os
 import numpy as np
@@ -27,13 +27,23 @@ tokenizer = AutoTokenizer.from_pretrained(model_id)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"  # Fix padding side for training
 
-# Load model with 8-bit quantization for memory efficiency
+
+from transformers import BitsAndBytesConfig
+
+# Configure 4-bit quantization
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16
+)
+
+# Load model with 4-bit config
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
-    load_in_8bit=True,  # Use 8-bit quantization
-    torch_dtype=torch.float16,
-    trust_remote_code=True,
-    device_map={"": 0} if torch.cuda.is_available() else None,
+    quantization_config=bnb_config, # Use the config here
+    device_map="auto",             # Let accelerate handle the mapping
+    trust_remote_code=True
 )
 
 # Prepare model for k-bit training
@@ -193,7 +203,6 @@ def test_model():
         from peft import PeftModel
         base_model = AutoModelForCausalLM.from_pretrained(
             model_id, 
-            load_in_8bit=True,
             device_map={"": 0} if torch.cuda.is_available() else None,
         )
         model = PeftModel.from_pretrained(base_model, local_model_path)

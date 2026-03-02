@@ -34,7 +34,8 @@ def preprocessing_node(
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         
-        routing_type = new_state.get("routing_type", "1")
+        # Force it to a string and strip whitespace to be safe
+        routing_type = str(new_state.get("routing_type", "1")).strip()
         next_node = "simple_processing" if routing_type == "1" else "complex_processing"
 
         update = {
@@ -192,10 +193,10 @@ if __name__ == "__main__":
     test_queries = [
             "What is machine learning?",  # Should be type 1 (EASY)
             # "What's the capital of France?",  # Should be type 1 (EASY) 
-            "How do I make coffee?",  # Should be type 1 (EASY)
+            # "How do I make coffee?",  # Should be type 1 (EASY)
             # "Explain quantum entanglement's implications for cryptography",  # Should be type 2 (DIFFICULT)
             # "Design a distributed system architecture for handling 1M concurrent users",  # Should be type 2 (DIFFICULT)
-            "Analyze the geopolitical implications of climate change on global trade patterns",  # Should be type 2 (DIFFICULT)
+            # "Analyze the geopolitical implications of climate change on global trade patterns",  # Should be type 2 (DIFFICULT)
         ]
 
     for query in test_queries:
