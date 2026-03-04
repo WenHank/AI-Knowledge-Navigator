@@ -387,9 +387,14 @@ async def aio_do_parse(
 
 
 if __name__ == "__main__":
-    # pdf_path = "../../demo/pdfs/demo3.pdf"
-    pdf_path = "pdf_data/CV.pdf"
+    pdf_path = "./uplaods/Report.pdf"
 
+    base_dir = Path(__file__).parent
+    pdf_path = base_dir / "uploads" / "Report.pdf"
+
+    if not pdf_path.exists():
+        print(f"Still can't find it at: {pdf_path.absolute()}")
+        
     try:
        do_parse("./output", [Path(pdf_path).stem], [read_fn(Path(pdf_path))],["en"],
                 end_page_id=10,

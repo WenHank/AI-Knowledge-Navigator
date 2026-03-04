@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai_knowledge_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # These should match your Neo4jConfig class defaults or env vars
+      - NEO4J_URL=${NEO4J_URL:-bolt://host.docker.internal:7687}
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-password}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+    volumes:
+      # Persistence for uploaded files and processed markdown
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+      # Mount the backend code for easy updates (optional for dev)
+      - ./backend:/app
+      # Optional: Cache for HuggingFace models so they don't re-download
+      - hf_cache:/root/.cache/huggingface
+    extra_hosts:
+      # Allows the container to talk to Neo4j running on your local Windows/Mac host
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf_cache:

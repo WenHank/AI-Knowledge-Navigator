@@ -8,23 +8,21 @@ import psutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
+import uvicorn
+import logging
+import torch
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
-
-import uvicorn
-import logging
-import torch
-
-from miner_pdf_to import read_fn, do_parse
-
+from miner_pdf_to_md import read_fn, do_parse
 from llama_index.core import Settings, PropertyGraphIndex, Document
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 
-from config import (Neo4jConfig, UploadResponse, ProcessingStatus, GraphQueryRequest, GraphQueryResponse, HealthResponse)
+from config import (Neo4jConfig, UploadResponse, ProcessingStatus, GraphQueryRequest, GraphQueryResponse, HealthResponse, LLMrouterQueryRequest, LLMrouterQueryResponse)
+from run_graph import agent_runner
 
 # Configure logging
 logging.basicConfig(
@@ -672,6 +670,53 @@ async def query_knowledge_graph(request: GraphQueryRequest):
                 "timestamp": current_time.isoformat()
             },
             error=error_msg
+        )
+
+@app.post("/query", response_model=LLMrouterQueryResponse)
+async def query_llm_router(request: LLMrouterQueryRequest):
+    """
+    Query the LLM router with user query and graph results
+    
+    Args:
+        request: Query request with user query and graph results
+    
+    Returns:
+        Response from the LLM router
+    """
+    start_time = time.time()
+    current_time = datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow()
+    
+    try:
+        logger.info(f"Processing LLM router query: {request.query[:100]}...")
+        
+        initial_state = {
+            "user_query": request.query, # Use the 'request' instance
+            "execution_summary": {},
+            "node_status": {}
+        }
+        # Run the agent runner with the provided query and graph results
+        response = await agent_runner.ainvoke(initial_state)
+        
+        processing_time = time.time() - start_time
+        logger.info(f"LLM router query processed in {processing_time:.2f}s")
+        
+        return LLMrouterQueryResponse(
+            status="success",
+            timestamp=current_time.isoformat(),
+            uptime_seconds=round(processing_time, 3),
+            response=response
+        )
+        
+    except Exception as e:
+        processing_time = time.time() - start_time
+        error_msg = f"LLM router query failed: {str(e)}"
+        logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        
+        return LLMrouterQueryResponse(
+            status="error",
+            timestamp=current_time.isoformat(),
+            uptime_seconds=round(processing_time, 3),
+            response=error_msg
         )
 
 @app.get("/config/neo4j", tags=["Configuration"])

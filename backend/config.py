@@ -52,3 +52,13 @@ class HealthResponse(BaseModel):
     queries_processed: int
     graph_connected: bool
     version: str
+
+class LLMrouterQueryRequest(BaseModel):
+    query: str
+    graph_results: Dict[str, Any]
+
+class LLMrouterQueryResponse(BaseModel):
+    status: str
+    timestamp: str
+    uptime_seconds: float
+    response: Any
