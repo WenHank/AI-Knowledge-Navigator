@@ -3,7 +3,21 @@ import json
 from dotenv import load_dotenv
 import requests
 
-from llmrouter_agents.base import BaseAgent
+# from llmrouter_agents.base import BaseAgent
+from abc import ABC, abstractmethod
+from typing import Union
+from langgraph.types import Command
+from langchain_core.messages import HumanMessage, AIMessage
+
+
+class BaseAgent(ABC):
+
+    @abstractmethod
+    def run(self, state: dict) -> Union[Command, HumanMessage, AIMessage]:
+        pass
+
+    def __call__(self, state: dict) -> Union[Command, HumanMessage, AIMessage]:
+        return self.run(state)
 
 load_dotenv()
  
@@ -11,28 +25,33 @@ load_dotenv()
 class OpenrouterAgent(BaseAgent):
     def __init__(self):
         self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-        self.ANSWERING_MODEL_NAME = os.getenv(
-            "ANSWERING_MODEL_NAME", "openai/gpt-oss-20b:free"
+        self.ANSWERING_CLOUD_MODEL_NAME = os.getenv(
+            "ANSWERING_CLOUD_MODEL_NAME", "stepfun/step-3.5-flash:free"
         )
+        # self.ANSWERING_CLOUD_MODEL_NAME = 'stepfun/step-3.5-flash:free'
+
+        # Remove the trailing slash here:
         self.OPENROUTER_HOST = "https://openrouter.ai/api/v1/chat/completions"
 
     def run(self, state: dict) -> dict:
         user_query = state.get("user_query", "")
 
         try:
+            print(self.ANSWERING_CLOUD_MODEL_NAME)
             response = requests.post(
                 url=self.OPENROUTER_HOST,
                 headers={
                     "Authorization": f"Bearer {self.OPENROUTER_API_KEY}",
                     "Content-Type": "application/json",
                 },
-                data=json.dumps(
-                    {
-                        "model": self.ANSWERING_MODEL_NAME,
-                        "messages": [{"role": "user", "content": user_query}],
-                    }
-                ),
+                json={
+                    "model": self.ANSWERING_CLOUD_MODEL_NAME,
+                    "messages": [
+                        {"role": "user", "content": user_query}
+                    ],
+                }
             )
+            print(f"API Response: {response}")
 
             if response.status_code == 401:
                 print("Error: Invalid API key or unauthorized access")
@@ -82,3 +101,4 @@ if __name__ == "__main__":
 
     print("\n--- Final OpenRouter Agent Result ---")
     print(json.dumps(result_state, indent=2, ensure_ascii=False))
+    
