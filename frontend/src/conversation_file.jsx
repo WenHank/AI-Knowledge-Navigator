@@ -3,7 +3,7 @@ import { Upload, Send, Loader2, Database, MessageCircle, FileCheck, AlertCircle 
 import axios from 'axios';
 import 'bootstrap/dist/css/bootstrap.min.css';
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = "http://127.0.0.1:8000";
 
 const GraphRAGUI = () => {
   const [chat, setChat] = useState([]);
@@ -12,6 +12,8 @@ const GraphRAGUI = () => {
   const [isQuerying, setIsQuerying] = useState(false);
 
   const handleFileUpload = async (e) => {
+    console.log(e);
+    
     const file = e.target.files[0];
     if (!file) return;
 

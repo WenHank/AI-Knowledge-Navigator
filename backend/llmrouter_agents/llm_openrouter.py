@@ -26,9 +26,8 @@ class OpenrouterAgent(BaseAgent):
     def __init__(self):
         self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
         self.ANSWERING_CLOUD_MODEL_NAME = os.getenv(
-            "ANSWERING_CLOUD_MODEL_NAME", "stepfun/step-3.5-flash:free"
+            "ANSWERING_CLOUD_MODEL_NAME", "openai/gpt-oss-20b:free"
         )
-        # self.ANSWERING_CLOUD_MODEL_NAME = 'stepfun/step-3.5-flash:free'
 
         # Remove the trailing slash here:
         self.OPENROUTER_HOST = "https://openrouter.ai/api/v1/chat/completions"

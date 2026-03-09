@@ -23,6 +23,8 @@ from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 
 from config import (Neo4jConfig, UploadResponse, ProcessingStatus, GraphQueryRequest, GraphQueryResponse, HealthResponse, LLMrouterQueryRequest, LLMrouterQueryResponse)
 from run_graph import agent_runner
+from celery.result import AsyncResult
+from celery_app import celery, process_pdf_task
 
 # Configure logging
 logging.basicConfig(
@@ -750,6 +752,31 @@ async def update_neo4j_config(config: Neo4jConfig):
             "database": config.database
         }
     }
+
+@app.delete("/config/neo4j/clear", tags=["Configuration"])
+async def clear_database():
+    """Wipe all nodes and relationships from the Neo4j database"""
+    try:
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            neo4j_config.url, 
+            auth=(neo4j_config.username, neo4j_config.password)
+        )
+        with driver.session(database=neo4j_config.database) as session:
+            # This deletes EVERYTHING in the current database
+            session.run("MATCH (n) DETACH DELETE n")
+            logger.info("🗑️ Database wiped successfully.")
+        
+        driver.close()
+        
+        # Reset app state so it doesn't try to use old indices
+        app_state["query_engine"] = None
+        app_state["timing_stats"]["documents_indexed"] = 0
+        
+        return {"success": True, "message": "Database cleared successfully"}
+    except Exception as e:
+        logger.error(f"Failed to clear database: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # MAIN

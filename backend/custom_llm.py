@@ -54,7 +54,7 @@ class TheCustomLLM(CustomLLM):
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.ANSWERING_LOCAL_MODEL_NAME,
                 torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
+                device_map="cuda" if torch.cuda.is_available() else None,
                 low_cpu_mem_usage=True,
             )
             self.model_loaded = True
