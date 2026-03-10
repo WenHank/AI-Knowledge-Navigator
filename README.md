@@ -63,3 +63,48 @@ Document Processing | Python |
 LLM Integration | OpenAI API |
 Retrieval | GraphRAG |
 Orchestration | Python |
+
+## 🚧 Development Roadmap
+
+This project is actively under development.  
+The roadmap below highlights the current progress and planned improvements toward a production-ready AI knowledge system.
+
+---
+
+### ✅ Core System (Completed)
+
+- [x] PDF ingestion pipeline
+- [x] PDF → Markdown knowledge extraction
+- [x] Knowledge graph construction with **Neo4j**
+- [x] GraphRAG-based retrieval
+- [x] Fine-tuned **LLM Router** for query classification
+- [x] Intelligent routing between query pipelines
+- [x] Natural language question-answering API
+
+### 🔧 System Improvements (In Progress)
+
+- [ ] **LLM Router evaluation framework**
+- [ ] **GraphRAG retrieval evaluation**
+- [ ] Async ingestion pipeline for large document processing
+- [ ] Logging and system observability
+
+---
+
+### 📊 Evaluation (Planned)
+
+To ensure reliability and answer quality, a structured evaluation pipeline will be introduced.
+
+The evaluation framework will focus on measuring both **retrieval quality** and **LLM response quality**.
+
+**Planned metrics include:**
+
+- **Retrieval Accuracy**  
+  Measures whether the GraphRAG pipeline retrieves the correct graph context.
+
+- **Answer Relevance**  
+  Evaluates how well the generated answer addresses the user's query.
+
+- **Faithfulness (Hallucination Detection)**  
+  Ensures the generated response is grounded in the retrieved knowledge graph.
+
+Future work will include automated evaluation scripts and benchmark datasets to continuously assess system performance.
