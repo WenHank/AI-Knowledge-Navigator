@@ -8,8 +8,23 @@ from dotenv import load_dotenv
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Optional, Dict, Any
 
-from llmrouter_agents.base import BaseAgent
+# from llmrouter_agents.base import BaseAgent
 
+from abc import ABC, abstractmethod
+from typing import Union
+from langgraph.types import Command
+from langchain_core.messages import HumanMessage, AIMessage
+
+
+class BaseAgent(ABC):
+
+    @abstractmethod
+    def run(self, state: dict) -> Union[Command, HumanMessage, AIMessage]:
+        pass
+
+    def __call__(self, state: dict) -> Union[Command, HumanMessage, AIMessage]:
+        return self.run(state)
+    
 load_dotenv()
 
 class LocalAgent(BaseAgent):
@@ -92,7 +107,12 @@ class LocalAgent(BaseAgent):
             inference_start_time = time.time()
             
             # Format prompt for instruction-following models
-            prompt = f"<s>[INST] {user_query} [/INST]"
+            messages = [{"role": "user", "content": user_query}]
+            prompt = self.tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
             
             # Tokenize input
             tokenization_start = time.time()
@@ -103,6 +123,7 @@ class LocalAgent(BaseAgent):
                 truncation=True,
                 max_length=2048
             )
+
             tokenization_time = time.time() - tokenization_start
             
             # Move to device if using GPU

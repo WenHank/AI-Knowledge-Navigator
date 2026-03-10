@@ -195,28 +195,3 @@ with open(os.path.join(local_model_path, "base_model_path.txt"), "w") as f:
     f.write(model_id)
 
 print("Training and saving completed!")
-
-# Quick test
-def test_model():
-    print("\nTesting model...")
-    try:
-        from peft import PeftModel
-        base_model = AutoModelForCausalLM.from_pretrained(
-            model_id, 
-            device_map={"": 0} if torch.cuda.is_available() else None,
-        )
-        model = PeftModel.from_pretrained(base_model, local_model_path)
-        
-        test_prompt = format_router_prompt("What is the capital of France?", "")
-        inputs = tokenizer(test_prompt, return_tensors="pt")
-        
-        with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=10, temperature=0.7)
-        
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        print(f"Test response: {response[-50:]}")
-        
-    except Exception as e:
-        print(f"Test error: {e}")
-
-test_model()
