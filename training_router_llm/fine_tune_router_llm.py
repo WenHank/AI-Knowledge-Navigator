@@ -57,7 +57,7 @@ train_df = full_dataset["train"].to_pandas()
 print(f"Train dataset size: {len(train_df)}")
 
 # Sample smaller dataset for testing (remove this for full training)
-train_df = train_df.sample(n=1000, random_state=42)
+train_df = train_df.sample(n=10000, random_state=42)
 print(f"Using sample dataset size: {len(train_df)}")
 
 # Step 3: Define routing strategy
@@ -79,16 +79,19 @@ def tokenize_function(examples):
     prompts = [format_router_prompt(prompt, route) 
               for prompt, route in zip(examples["prompt"], examples["route_decision"])]
     
+    # We must pad to max_length here to ensure uniform tensor shapes 
+    # if the data collator is struggling.
     tokenized = tokenizer(
         prompts,
         truncation=True,
-        padding=False,
-        max_length=512,  # Reduced for memory
-        return_tensors=None
+        padding="max_length", # Changed from False to max_length
+        max_length=512,
+        return_tensors=None    # Map handles conversion to tensors
     )
-    tokenized["labels"] = tokenized["input_ids"].copy()
+    
+    # For CausalLM, labels are usually a copy of input_ids
+    tokenized["labels"] = [list(ids) for ids in tokenized["input_ids"]]
     return tokenized
-
 # Step 4: Prepare dataset
 from datasets import Dataset
 train_dataset = Dataset.from_pandas(train_df[['prompt', 'route_decision']])
@@ -137,7 +140,6 @@ training_args = TrainingArguments(
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
     mlm=False,
-    pad_to_multiple_of=8
 )
 
 # Step 8: Trainer
@@ -165,12 +167,11 @@ class CustomTrainer(Trainer):
         
         return (loss, outputs) if return_outputs else loss
 
-trainer = CustomTrainer(
+trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=tokenized_dataset,
     data_collator=data_collator,
-    processing_class=tokenizer,
 )
 
 # Step 9: Train
