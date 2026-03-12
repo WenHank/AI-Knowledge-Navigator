@@ -8,23 +8,17 @@ from datasets import load_dataset
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 local_model_path = "./routellm_fine_tuned_router"
 
-# Pricing per 1M tokens (Approximate March 2026 rates)
-PRICES = {
-    "PREMIUM_MODEL": 2.50,   # e.g., GPT-4o
-    "BALANCED_MODEL": 0.50,  # e.g., Mixtral 8x7B
-    "EFFICIENT_MODEL": 0.05  # e.g., Llama-3-8B
-}
-
 def determine_route(score):
-    if score >= 4: return "EFFICIENT_MODEL"
-    elif score >= 3: return "BALANCED_MODEL"
-    else: return "PREMIUM_MODEL"
+    if score >= 4.0:
+        return "LOCAL_MODEL"
+    else:
+        return "CLOUD_MODEL"
 
 def evaluate_router():
     # 1. Load Data
     print("Loading test dataset...")
     full_dataset = load_dataset("routellm/gpt4_dataset")
-    test_df = full_dataset["test"].to_pandas().sample(n=100, random_state=42) # Start with 100 for speed
+    test_df = full_dataset["validation"].to_pandas().sample(n=100, random_state=42) # Start with 100 for speed
     test_df['ground_truth'] = test_df['mixtral_score'].apply(determine_route)
 
     # 2. Load Model
@@ -74,33 +68,51 @@ def evaluate_router():
 def calculate_token_efficiency(results):
     total_queries = len(results)
     
-    # Baseline: If we sent everything to GPT-20B
-    baseline_remote_tokens = sum(r['tokens'] for r in results)
+    # 1. Calculate Accuracy
+    # We need to map the 3-tier predictions to the 2-tier ground truth
+    # Logic: EFFICIENT -> LOCAL | BALANCED/PREMIUM -> CLOUD
+    correct_predictions = 0
+    for r in results:
+        mapped_pred = "LOCAL_MODEL" if r['pred'] == "EFFICIENT_MODEL" else "CLOUD_MODEL"
+        if mapped_pred == r['actual']:
+            correct_predictions += 1
     
-    # Router results
-    actual_remote_tokens = sum(r['tokens'] for r in results if r['pred'] == "PREMIUM_MODEL")
-    actual_local_tokens = sum(r['tokens'] for r in results if r['pred'] == "EFFICIENT_MODEL")
-    
-    # We treat BALANCED_MODEL as Remote for this 2-model comparison
-    actual_remote_tokens += sum(r['tokens'] for r in results if r['pred'] == "BALANCED_MODEL")
+    accuracy = (correct_predictions / total_queries) * 100
 
-    token_savings_pct = (actual_local_tokens / baseline_remote_tokens) * 100
+    # 2. Token Calculations
+    total_input_tokens = sum(r['tokens'] for r in results)
     
-    print("\n" + "="*40)
-    print(f"ROUTER TOKEN EFFICIENCY REPORT")
-    print("="*40)
-    print(f"Total Queries:            {total_queries}")
-    print(f"Total Input Tokens:       {baseline_remote_tokens:,}")
-    print(f"Sent to Local (Qwen3-4B): {actual_local_tokens:,}")
-    print(f"Sent to Remote (GPT-20B): {actual_remote_tokens:,}")
-    print("-" * 40)
-    print(f"CLOUD TOKEN REDUCTION:    {token_savings_pct:.2f}%")
-    print("="*40)
+    # Tokens routed to local (EFFICIENT)
+    tokens_routed_local = sum(r['tokens'] for r in results if r['pred'] == "EFFICIENT_MODEL")
     
+    # Tokens routed to cloud (BALANCED + PREMIUM)
+    tokens_routed_cloud = sum(r['tokens'] for r in results if r['pred'] in ["BALANCED_MODEL", "PREMIUM_MODEL"])
+    
+    # Total Savings (The tokens that DID NOT go to the cloud)
+    tokens_saved = tokens_routed_local
+    token_savings_pct = (tokens_saved / total_input_tokens) * 100
+
+    # 3. Print Report
+    print("\n" + "="*45)
+    print(f"{'ROUTER PERFORMANCE REPORT':^45}")
+    print("="*45)
+    print(f"Total Queries Evaluated:    {total_queries}")
+    print(f"Router Classification Acc:  {accuracy:.2f}%")
+    print("-" * 45)
+    print(f"Total Potential Tokens:     {total_input_tokens:,}")
+    print(f"Tokens Sent to Cloud:       {tokens_routed_cloud:,}")
+    print(f"Tokens Routed Locally:      {tokens_routed_local:,}")
+    print("-" * 45)
+    print(f"NET TOKENS SAVED:           {tokens_saved:,}")
+    print(f"CLOUD TOKEN REDUCTION:      {token_savings_pct:.2f}%")
+    print("-" * 45)
+    print(f"Accuracy:           {accuracy:.2f}%")
+    print("="*45)
+    
+    if accuracy < 70:
+        print("NOTE: Accuracy is low. The router might be misclassifying complex tasks.")
     if token_savings_pct > 50:
-        print("RESULT: High Efficiency. Your router is offloading the majority of tasks locally.")
-    else:
-        print("RESULT: Low Efficiency. Most tasks still require the 20B model.")
+        print("RESULT: High Efficiency. You are saving significant API costs.")
 
 if __name__ == "__main__":
     evaluate_router()
