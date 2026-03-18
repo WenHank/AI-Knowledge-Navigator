@@ -47,7 +47,7 @@ train_df = full_dataset["train"].to_pandas().sample(n=5000, random_state=42)
 
 # Step 3: Binary Routing Logic (Simplified for Local vs Cloud)
 def determine_route(score):
-    return "LOCAL_MODEL" if score >= 4.0 else "CLOUD_MODEL"
+    return "CLOUD_MODEL" if score >= 4.0 else "LOCAL_MODEL"
 
 train_df['route_decision'] = train_df['mixtral_score'].apply(determine_route)
 
