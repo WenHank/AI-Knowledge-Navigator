@@ -397,7 +397,7 @@ if __name__ == "__main__":
         
     try:
        do_parse("./output", [Path(pdf_path).stem], [read_fn(Path(pdf_path))],["en"],
-                end_page_id=10,
+                # end_page_id=10,
                 backend = 'pipeline'
                 )
     except Exception as e:

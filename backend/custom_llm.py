@@ -6,7 +6,8 @@ from typing import Any, Dict, Optional
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import requests
 
-from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
+from llama_index.core.llms import CustomLLM, CompletionResponse, CompletionResponseGen, LLMMetadata
+
 from llama_index.core.llms.callbacks import llm_completion_callback
 
 
@@ -121,19 +122,18 @@ class TheCustomLLM(CustomLLM):
     
     @llm_completion_callback()
     def complete(self, prompt: str, **kwargs: Any) -> CompletionResponse:
-        # Try local first
-        result = self._generate_local_response(prompt)
-        if result:
-            return CompletionResponse(text=result)
+        """Main completion method for LlamaIndex"""
+        # Call your existing local response generator
+        response_text = self._generate_local_response(prompt)
         
-        # Fallback to OpenRouter
-        result = self._generate_openrouter_response(prompt)
-        if result:
-            return CompletionResponse(text=result)
-        
-        return CompletionResponse(text="Unable to process request")
-    
+        # If local failed, use OpenRouter fallback
+        if response_text is None:
+            response_text = self._generate_openrouter_response(prompt)
+            
+        return CompletionResponse(text=response_text or "Error: No response generated.")
+
     @llm_completion_callback()
-    def stream_complete(self, prompt: str, **kwargs: Any):
+    def stream_complete(self, prompt: str, **kwargs: Any) -> CompletionResponseGen:
+        """Required abstract method. We'll wrap 'complete' in a generator."""
         response = self.complete(prompt, **kwargs)
         yield response
